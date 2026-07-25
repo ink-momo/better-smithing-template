@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8.6",
+  "package": "com.mo.better_smithing_template.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "SmithingMenuMixin"
+  ],
+  "client": [
+    "ItemMixin"
+  ],
+  "server": []
+}
