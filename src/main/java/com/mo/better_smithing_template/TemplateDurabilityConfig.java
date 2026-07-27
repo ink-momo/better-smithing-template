@@ -5,12 +5,7 @@ import net.neoforged.neoforge.common.ModConfigSpec;
 
 import java.util.List;
 
-/**
- * 锻造模板耐久模组配置。
- *
- * 必须使用 {@link net.neoforged.neoforge.common.ModConfig.Type#STARTUP} 类型，
- * 确保在 {@link net.neoforged.neoforge.event.ModifyDefaultComponentsEvent} 触发前已加载。
- */
+/** 锻造模板耐久模组配置。 */
 public class TemplateDurabilityConfig {
 
     public static final TemplateDurabilityConfig CONFIG;
@@ -22,13 +17,8 @@ public class TemplateDurabilityConfig {
         SPEC = pair.getRight();
     }
 
-    /** 是否启用 instanceof SmithingTemplateItem 自动匹配（智能识别） */
     public final ModConfigSpec.BooleanValue autoDetectTemplates;
-
-    /** 需要添加耐久属性的物品注册名列表（如 "minecraft:netherite_upgrade_smithing_template"） */
     public final ModConfigSpec.ConfigValue<List<? extends String>> targetItems;
-
-    /** 耐久值上限（每次锻造消耗 1 点，归零时模板消失） */
     public final ModConfigSpec.IntValue maxDamage;
 
     private TemplateDurabilityConfig(ModConfigSpec.Builder builder) {
@@ -42,11 +32,12 @@ public class TemplateDurabilityConfig {
                 .comment("需要添加耐久属性的模板注册名列表",
                         "格式: namespace:path，例如 cataclysm:cursium_upgrade_smithing_template",
                         "支持原版和模组添加的任何模板（理论支持）")
-                .defineList("target_items", () ->
-                        List.of(
+                .defineList("target_items",
+                        () -> List.of(
                                 "cataclysm:ignitium_upgrade_smithing_template",
                                 "cataclysm:cursium_upgrade_smithing_template"
                         ),
+                        () -> "minecraft:netherite_upgrade_smithing_template",   // 纯占位用，不实际使用
                         o -> o instanceof String s && ResourceLocation.tryParse(s) != null);
 
         maxDamage = builder
