@@ -1,14 +1,15 @@
 package com.mo.better_smithing_template;
 
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.SmithingTemplateItem;
-import net.neoforged.bus.api.IEventBus;
-import net.neoforged.fml.ModContainer;
-import net.neoforged.fml.common.Mod;
-import net.neoforged.fml.config.ModConfig;
-import net.neoforged.neoforge.event.ModifyDefaultComponentsEvent;
+import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.fml.ModLoadingContext;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.config.ModConfig;
+import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
+import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import net.minecraftforge.registries.ForgeRegistries;
 import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 
@@ -18,22 +19,15 @@ import java.util.stream.Collectors;
 /**
  * Better Smithing Template 模组主类。
  *
- * 设计思路：
- * 1. 通过 {@link ModifyDefaultComponentsEvent} 为锻造模板添加自定义数据组件
- *    {@link ModDataComponents#TEMPLATE_USES} 和 {@link ModDataComponents#TEMPLATE_MAX_USES}，
- *    使其拥有"使用次数"（可配置上限），替代原版 MAX_DAMAGE。
- *    原因：原版 MAX_DAMAGE 与 MAX_STACK_SIZE > 1 互斥，会导致锻造模板复制配方加载失败。
- * 2. 通过 Mixin 改写 {@link net.minecraft.world.inventory.SmithingMenu} 的锻造取出逻辑，
- *    锻造时不再直接消耗模板，而是对 TEMPLATE_USES -1；归零时模板才会消失。
- * 3. 通过 Mixin 改写 {@link Item} 的耐久条渲染方法，让自定义组件也能显示类原版耐久条。
+ * <p>1.20.1 Forge 入口：通过 {@link FMLJavaModLoadingContext#get()} 获取 Mod 事件总线，
+ * 配置使用 {@link ModLoadingContext#registerConfig} 注册为 {@link ModConfig.Type#COMMON} 类型
+ * （1.21 NeoForge 的 STARTUP 在 1.20.1 中不存在）。</p>
  *
- * 配置策略：混合匹配模式
- * - target_items：精确控制哪些物品获得耐久，支持任意注册名
- * - auto_detect_templates：自动匹配所有 SmithingTemplateItem 子类（含其他模组）
- * 两者取并集，兼顾灵活性和开箱即用。
- *
- * 注意：必须使用 {@link ModConfig.Type#STARTUP} 类型加载配置，
- * 否则 ModifyDefaultComponentsEvent 触发时配置尚未加载。
+ * <p>1.21 的 {@code ModifyDefaultComponentsEvent} 在 1.20.1 中不存在，因此无法在物品注册期
+ * 注入 Data Component。改为在 {@link FMLCommonSetupEvent} 中遍历 {@link ForgeRegistries#ITEMS}
+ * 一次性收集所有匹配的 Item 实例并缓存到 {@link #MATCHED_TEMPLATES}，供 Mixin 在
+ * {@link net.minecraft.world.inventory.SmithingMenu#createResult} 阶段通过
+ * {@link TemplateNbt#ensureInit} 惰性写入 NBT。</p>
  */
 @Mod(BetterSmithingTemplate.MOD_ID)
 public class BetterSmithingTemplate {
@@ -41,54 +35,78 @@ public class BetterSmithingTemplate {
     public static final String MOD_ID = "better_smithing_template";
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    public BetterSmithingTemplate(IEventBus modBus, ModContainer container) {
-        // 注册自定义数据组件，必须在 ModifyDefaultComponentsEvent 触发前完成
-        ModDataComponents.register(modBus);
+    /** 在 FMLCommonSetupEvent 阶段被填充，所有应注入耐久的模板 Item 集合。 */
+    private static volatile Set<Item> MATCHED_TEMPLATES = Set.of();
 
-        // 必须使用 STARTUP 类型：COMMON 类型在 FMLCommonSetupEvent 之前才加载，
-        // 此时 ModifyDefaultComponentsEvent 已经过去
-        container.registerConfig(ModConfig.Type.STARTUP, TemplateDurabilityConfig.SPEC, "better_smithing_template.toml");
+    public BetterSmithingTemplate() {
+        IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
 
-        modBus.addListener(BetterSmithingTemplate::onModifyComponents);
-    }
-
-    private static void onModifyComponents(ModifyDefaultComponentsEvent event) {
-        int maxUses = TemplateDurabilityConfig.CONFIG.maxDamage.get();
-        if (maxUses <= 0) {
-            return;
-        }
-
-        // 从配置文件读取目标物品注册名列表，转为 Set 以提高查询效率
-        Set<ResourceLocation> targetIds = TemplateDurabilityConfig.CONFIG.targetItems.get().stream()
-                .map(ResourceLocation::parse)
-                .collect(Collectors.toSet());
-
-        boolean autoDetect = TemplateDurabilityConfig.CONFIG.autoDetectTemplates.get();
-
-        // 混合匹配：注册名列表 OR instanceof SmithingTemplateItem
-        // 设置 TEMPLATE_USES（剩余次数，初始等于上限）和 TEMPLATE_MAX_USES（上限，用于耐久条比例）
-        // 不使用 MAX_DAMAGE，避免与 MAX_STACK_SIZE > 1 互斥导致配方加载失败
-        event.modifyMatching(
-                item -> matchesTarget(item, targetIds, autoDetect),
-                builder -> {
-                    builder.set(ModDataComponents.TEMPLATE_USES.get(), maxUses);
-                    builder.set(ModDataComponents.TEMPLATE_MAX_USES.get(), maxUses);
-                }
+        // 注册配置文件 config/better_smithing_template.toml
+        ModLoadingContext.get().registerConfig(
+                ModConfig.Type.COMMON,
+                TemplateDurabilityConfig.SPEC,
+                "better_smithing_template.toml"
         );
 
-        LOGGER.info("[{}] 已为匹配的锻造模板设置使用次数上限: {}", MOD_ID, maxUses);
+        // 在 setup 阶段收集匹配的模板 Item
+        modBus.addListener(BetterSmithingTemplate::onCommonSetup);
     }
 
     /**
-     * 判断物品是否应获得耐久属性。两个条件取并集：
-     * 1. 注册名在配置文件列表中（精确匹配，支持任意物品）
-     * 2. autoDetectTemplates 为 true 且物品是 SmithingTemplateItem 实例（自动覆盖模组模板）
+     * 在 setup 阶段（注册阶段已完成、ForgeRegistries 已被填充）收集所有应注入耐久的模板 Item。
+     *
+     * <p>本方法不修改任何 Item 实例，仅做集合缓存；真正的 NBT 注入由
+     * {@link TemplateNbt#ensureInit} 在玩家手持/放入锻造台时按需执行。</p>
      */
+    private static void onCommonSetup(FMLCommonSetupEvent event) {
+        event.enqueueWork(() -> {
+            int maxUses = TemplateDurabilityConfig.CONFIG.maxDamage.get();
+            if (maxUses <= 0) {
+                MATCHED_TEMPLATES = Set.of();
+                LOGGER.info("[{}] max_damage = 0, 已禁用耐久功能（原版行为）", MOD_ID);
+                return;
+            }
+
+            Set<ResourceLocation> targetIds = TemplateDurabilityConfig.CONFIG.targetItems.get().stream()
+                    .map(ResourceLocation::tryParse)
+                    .filter(java.util.Objects::nonNull)
+                    .collect(Collectors.toSet());
+
+            boolean autoDetect = TemplateDurabilityConfig.CONFIG.autoDetectTemplates.get();
+
+            Set<Item> matched = ForgeRegistries.ITEMS.getValues().stream()
+                    .filter(item -> matchesTarget(item, targetIds, autoDetect))
+                    .collect(Collectors.toSet());
+
+            MATCHED_TEMPLATES = Set.copyOf(matched);
+            LOGGER.info("[{}] 已收集 {} 个锻造模板将注入耐久 (max_damage={})",
+                    MOD_ID, matched.size(), maxUses);
+        });
+    }
+
     private static boolean matchesTarget(Item item, Set<ResourceLocation> targetIds, boolean autoDetect) {
-        ResourceLocation key = BuiltInRegistries.ITEM.getKey(item);
-        if (targetIds.contains(key)) {
+        ResourceLocation key = ForgeRegistries.ITEMS.getKey(item);
+        if (key != null && targetIds.contains(key)) {
             return true;
         }
         return autoDetect && item instanceof SmithingTemplateItem;
+    }
+
+    /**
+     * 判断给定 Item 是否应当被注入耐久。
+     *
+     * <p>由 Mixin 在锻造台 {@code createResult} 阶段调用，配合
+     * {@link TemplateNbt#ensureInit} 完成惰性 NBT 注入。</p>
+     */
+    public static boolean isTargetTemplate(Item item) {
+        return MATCHED_TEMPLATES.contains(item);
+    }
+
+    /**
+     * 读取配置的最大使用次数。Mix 层无法直接访问 ForgeConfigSpec 中的值（配置可能尚未加载），
+     * 提供该访问器供 Mixin 在运行时按需读取。
+     */
+    public static int configuredMaxDamage() {
+        return TemplateDurabilityConfig.CONFIG.maxDamage.get();
     }
 }

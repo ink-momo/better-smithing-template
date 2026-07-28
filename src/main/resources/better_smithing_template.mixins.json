@@ -1,13 +1,19 @@
 {
   "required": true,
-  "minVersion": "0.8.6",
+  "minVersion": "0.8",
   "package": "com.mo.better_smithing_template.mixin",
-  "compatibilityLevel": "JAVA_21",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "better_smithing_template.refmap.json",
   "mixins": [
-    "SmithingMenuMixin"
+    "SmithingMenuMixin",
+    "ItemCombinerMenuMixin",
+    "SlotMixin"
   ],
   "client": [
     "ItemMixin"
   ],
-  "server": []
+  "server": [],
+  "injectors": {
+    "defaultRequire": 1
+  }
 }
