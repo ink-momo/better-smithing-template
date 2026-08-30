@@ -167,8 +167,3 @@ publishing {
         }
     }
 }
-
-// 让 MixinGradle 在 IDE 同步时也能生成 refmap
-tasks.named('compileJava', JavaCompile).configure {
-    options.compilerArgs << "-Arefmap.json=${mixin_refmap_name}".toString()
-}
